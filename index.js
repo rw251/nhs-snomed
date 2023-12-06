@@ -13,6 +13,7 @@ import {
   readFileSync,
   readdirSync,
   createWriteStream,
+  createReadStream,
   copyFileSync,
 } from 'fs';
 import { JsonStreamStringify } from 'json-stream-stringify';
@@ -21,7 +22,7 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
-import decompress from 'decompress';
+import unzip from 'unzip-stream';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,9 +32,13 @@ const FILES_DIR = path.join(__dirname, 'files');
 const ZIP_DIR = path.join(FILES_DIR, 'zip');
 const RAW_DIR = path.join(FILES_DIR, 'raw');
 const PROCESSED_DIR = path.join(FILES_DIR, 'processed');
-const CODE_LOOKUP = path.join(FILES_DIR, 'code-lookup.json');
 
 const existingFiles = readdirSync(ZIP_DIR);
+
+function ensureDir(filePath) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  return filePath;
+}
 
 if (!process.env.email) {
   console.log('Need email=xxx in the .env file');
@@ -78,16 +83,37 @@ async function getLatestUrl() {
     { headers: { Cookie } }
   );
   const html = await response.text();
-  const downloads = html.match(
-    /href="(https:\/\/isd.digital.nhs.uk\/download[^"]+)"/
-  );
-  const latest = downloads[1];
-  // const latest =
-  //   'https://isd.digital.nhs.uk/download/api/v1/keys/b851973bc9f1c7db67dea4f6504cd62f51847376/content/items/101/uk_sct2cl_37.0.0_20230927000001Z.zip?consumer=webapp-releases-page';
-  return latest;
+  const downloads = html
+    .match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g)
+    .map((url) => {
+      const [, zipFileName] = url.match(/\/([^/]+).zip/);
+      return { url, zipFileName };
+    });
+  // if (existingFiles.length === 0) {
+  //   // first time
+  //   return { url: downloads[0].url, isFirst: true };
+  // } else {
+  //   let minIndex = Number.MAX_SAFE_INTEGER;
+  //   downloads.forEach(({ url, zipFileName }, i) => {
+  //     if (existingFiles.indexOf(zipFileName) > -1) {
+  //       minIndex = Math.min(i, minIndex);
+  //     }
+  //   });
+  //   if (minIndex < 0 || minIndex === Number.MAX_SAFE_INTEGER) {
+  //     console.log(
+  //       `Something strange going on with download list. Was expecting to find previous downloads there but haven't as the minIndex is: ${minIndex}`
+  //     );
+  //     process.exit();
+  //   }
+  //   if (minIndex === 0) return { url: downloads[0], isFirst: false };
+  //   else return { url: downloads[minIndex - 1], isFirst: false };
+  // }
+  const latest =
+    'https://isd.digital.nhs.uk/download/api/v1/keys/b851973bc9f1c7db67dea4f6504cd62f51847376/content/items/101/uk_sct2cl_37.0.0_20230927000001Z.zip?consumer=webapp-releases-page';
+  return { url: latest, isFirst: true };
 }
 
-async function downloadIfNotExists(url) {
+async function downloadIfNotExists({ url, isFirst }) {
   await login();
 
   const filename = url.split('/').reverse()[0].split('?')[0];
@@ -95,16 +121,16 @@ async function downloadIfNotExists(url) {
 
   if (existingFiles.indexOf(filename) > -1) {
     console.log(`> The zip file already exists so no need to download again.`);
-    return { filename, isFirst: false };
+    return { filename, isFirst };
   }
 
   console.log(`> That zip is not stored locally. Downloading...`);
   const outputFile = path.join(ZIP_DIR, filename);
-  const stream = createWriteStream(outputFile);
+  const stream = createWriteStream(ensureDir(outputFile));
   const { body } = await fetch(url, { headers: { Cookie } });
   await finished(Readable.fromWeb(body).pipe(stream));
   console.log(`> File downloaded.`);
-  return { filename, isFirst: existingFiles.length === 0 };
+  return { filename, isFirst };
 }
 
 async function extractZip({ filename: zipFile, isFirst }) {
@@ -119,20 +145,44 @@ async function extractZip({ filename: zipFile, isFirst }) {
     return { filename: name, isFirst };
   }
   console.log(`> The directory ${outDir} does not yet exist. Creating...`);
-  mkdirSync(outDir);
+  ensureDir(outDir);
   console.log(`> Extracting files from the zip...`);
-  const files = await decompress(file, outDir, {
-    filter: (file) => {
-      if (isFirst && file.path.toLowerCase().match(/full.+sct2_description/))
-        return true;
-      if (!isFirst && file.path.toLowerCase().match(/delta.+sct2_description/))
-        return true;
-      // if (file.path.toLowerCase().indexOf('readme') > -1) return true;
-      // if (file.path.toLowerCase().indexOf('information') > -1) return true;
-      return false;
-    },
+  let toUnzip = 0;
+  let unzipped = 0;
+  let isRead = false;
+  await new Promise((resolve) => {
+    createReadStream(file)
+      .pipe(unzip.Parse())
+      .on('entry', function (entry) {
+        if (
+          isFirst &&
+          entry.path.toLowerCase().match(/full.+sct2_description/)
+        ) {
+          console.log(`> Extracting ${entry.path}...`);
+          toUnzip++;
+          const outputFilePath = path.join(outDir, entry.path);
+          const outStream = createWriteStream(ensureDir(outputFilePath));
+          outStream.on('finish', () => {
+            console.log(`> Extracted ${entry.path}.`);
+            unzipped++;
+            if (isRead && toUnzip === unzipped) {
+              return resolve();
+            }
+          });
+          entry.pipe(outStream);
+        } else {
+          entry.autodrain();
+        }
+      })
+      .on('end', () => {
+        console.log(`> Finished reading zip file.`);
+        isRead = true;
+        if (toUnzip === unzipped) {
+          return resolve();
+        }
+      });
   });
-  console.log(`> ${files.length} files extracted.`);
+  console.log(`> ${unzipped} files extracted.`);
   return { filename: name, isFirst };
 }
 
@@ -173,9 +223,7 @@ async function loadDataIntoMemory({ filename: dir, isFirst }) {
     console.log(`> The json files already exist so I'll move on...`);
     return { dir, isFirst };
   }
-  if (!existsSync(processedFilesDirFromRoot)) {
-    mkdirSync(processedFilesDirFromRoot);
-  }
+  ensureDir(processedFilesDirFromRoot);
 
   const definitions = {};
   for (let directory of readdirSync(rawFilesDir)) {
@@ -242,7 +290,7 @@ async function loadDataIntoMemory({ filename: dir, isFirst }) {
     let done = 0;
     const jsonStream = new JsonStreamStringify(definitions);
 
-    const stream = createWriteStream(definitionFile);
+    const stream = createWriteStream(ensureDir(definitionFile));
     jsonStream.pipe(stream);
     jsonStream.on('end', () => {
       console.log('> defs.json written');
@@ -251,7 +299,7 @@ async function loadDataIntoMemory({ filename: dir, isFirst }) {
     });
 
     const readableJsonStream = new JsonStreamStringify(definitions, null, 2);
-    const streamReadable = createWriteStream(readableDefinitionFile);
+    const streamReadable = createWriteStream(ensureDir(readableDefinitionFile));
     readableJsonStream.pipe(streamReadable);
     readableJsonStream.on('end', () => {
       console.log('> defs-readable.json written');
@@ -272,9 +320,9 @@ function combineLatest({ dir, isFirst }) {
     console.log('> This is the first time, so copy the json files to latest.');
     console.log('> Copying defs.json...');
     // just copy to latest
-    copyFileSync(definitionFile, latestDefsFile);
+    copyFileSync(definitionFile, ensureDir(latestDefsFile));
     console.log('> Copying defs-readable.json...');
-    copyFileSync(readableDefinitionFile, latestReadableDefsFile);
+    copyFileSync(readableDefinitionFile, ensureDir(latestReadableDefsFile));
     console.log('> All files copied.');
   } else {
     // load latest
@@ -306,14 +354,14 @@ function combineLatest({ dir, isFirst }) {
     console.log('> Writing updated files...');
     const jsonStream = new JsonStreamStringify(latestDefs);
 
-    const stream = createWriteStream(latestDefsFile);
+    const stream = createWriteStream(ensureDir(latestDefsFile));
     jsonStream.pipe(stream);
     jsonStream.on('end', () =>
       console.log('> Latest defs.json written to file.')
     );
 
     const readableJsonStream = new JsonStreamStringify(latestDefs, null, 2);
-    const streamReadable = createWriteStream(latestReadableDefsFile);
+    const streamReadable = createWriteStream(ensureDir(latestReadableDefsFile));
     readableJsonStream.pipe(streamReadable);
     readableJsonStream.on('end', () =>
       console.log('> Latest defs-readable.json written to file.')
