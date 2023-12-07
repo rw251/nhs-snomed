@@ -90,10 +90,22 @@ async function getLatestUrl() {
       return { url, zipFileName };
     });
 
-  return { url: downloads[0].url };
+  const drugResponse = await fetch(
+    'https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/105/releases',
+    { headers: { Cookie } }
+  );
+  const drugHtml = await drugResponse.text();
+  const drugDownloads = drugHtml
+    .match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g)
+    .map((url) => {
+      const [, zipFileName] = url.match(/\/([^/]+.zip)/);
+      return { url, zipFileName };
+    });
+
+  return { url: downloads[0].url, drugUrl: drugDownloads[0].url };
 }
 
-async function downloadIfNotExists({ url }) {
+async function downloadIfNotExistsHelper(url) {
   await login();
 
   const zipFileName = url.split('/').reverse()[0].split('?')[0];
@@ -101,7 +113,7 @@ async function downloadIfNotExists({ url }) {
 
   if (existingFiles.indexOf(zipFileName) > -1) {
     console.log(`> The zip file already exists so no need to download again.`);
-    return { zipFileName };
+    return zipFileName;
   }
 
   console.log(`> That zip is not stored locally. Downloading...`);
@@ -110,10 +122,16 @@ async function downloadIfNotExists({ url }) {
   const { body } = await fetch(url, { headers: { Cookie } });
   await finished(Readable.fromWeb(body).pipe(stream));
   console.log(`> File downloaded.`);
-  return { zipFileName };
+  return zipFileName;
 }
 
-async function extractZip({ zipFileName }) {
+async function downloadIfNotExists({ url, drugUrl }) {
+  const zipFileName = await downloadIfNotExistsHelper(url);
+  const drugZipFileName = await downloadIfNotExistsHelper(drugUrl);
+  return { zipFileName, drugZipFileName };
+}
+
+async function extractZipHelper(zipFileName) {
   const dirName = zipFileName.replace('.zip', '');
   const file = path.join(ZIP_DIR, zipFileName);
   const outDir = path.join(RAW_DIR, dirName);
@@ -121,7 +139,7 @@ async function extractZip({ zipFileName }) {
     console.log(
       `> The directory ${outDir} already exists, so I'm not unzipping.`
     );
-    return { dirName };
+    return dirName;
   }
   console.log(`> The directory ${outDir} does not yet exist. Creating...`);
   ensureDir(outDir, true);
@@ -159,15 +177,22 @@ async function extractZip({ zipFileName }) {
       });
   });
   console.log(`> ${unzipped} files extracted.`);
-  return { dirName };
+  return dirName;
 }
 
-function getFileNames(dir, startingFromProjectDir) {
-  const rawFilesDir = path.join(RAW_DIR, dir);
-  const processedFilesDirFromRoot = path.join(PROCESSED_DIR, dir);
-  const processedFilesDir = startingFromProjectDir
-    ? path.join('files', 'processed', dir)
-    : processedFilesDirFromRoot;
+async function extractZip({ zipFileName, drugZipFileName }) {
+  const dirName = await extractZipHelper(zipFileName);
+  const drugDirName = await extractZipHelper(drugZipFileName);
+  return { dirName, drugDirName };
+}
+
+function getFileNames({ dirName, drugDirName }) {
+  const snomedId = `${dirName}-${drugDirName}`;
+
+  const rawFilesDir = path.join(RAW_DIR, dirName);
+  const drugRawFilesDir = path.join(RAW_DIR, drugDirName);
+  const processedFilesDirFromRoot = path.join(PROCESSED_DIR, snomedId);
+  const processedFilesDir = path.join('files', 'processed', snomedId);
   const definitionFile = path.join(processedFilesDir, 'defs.json');
   const readableDefinitionFile = path.join(
     processedFilesDir,
@@ -175,6 +200,7 @@ function getFileNames(dir, startingFromProjectDir) {
   );
   return {
     rawFilesDir,
+    drugRawFilesDir,
     definitionFile,
     readableDefinitionFile,
     processedFilesDir,
@@ -188,20 +214,8 @@ function getFileNames(dir, startingFromProjectDir) {
   };
 }
 
-async function loadDataIntoMemory({ dirName }) {
-  const {
-    processedFilesDirFromRoot,
-    rawFilesDir,
-    definitionFile,
-    readableDefinitionFile,
-  } = getFileNames(dirName);
-  if (existsSync(definitionFile) && existsSync(readableDefinitionFile)) {
-    console.log(`> The json files already exist so I'll move on...`);
-    return { dirName };
-  }
-  ensureDir(processedFilesDirFromRoot, true);
-
-  const definitions = {};
+let definitions = {};
+async function loadDataIntoMemoryHelper(rawFilesDir) {
   for (let directory of readdirSync(rawFilesDir)) {
     const descriptionFileDir = path.join(
       rawFilesDir,
@@ -256,43 +270,64 @@ async function loadDataIntoMemory({ dirName }) {
         }
       });
   }
+}
+
+async function loadDataIntoMemory({ dirName, drugDirName }) {
+  const {
+    processedFilesDirFromRoot,
+    definitionFile,
+    readableDefinitionFile,
+    rawFilesDir,
+    drugRawFilesDir,
+  } = getFileNames({ dirName, drugDirName });
+  if (existsSync(definitionFile) && existsSync(readableDefinitionFile)) {
+    console.log(`> The json files already exist so I'll move on...`);
+    return { dirName, drugDirName };
+  }
+  ensureDir(processedFilesDirFromRoot, true);
+
+  await loadDataIntoMemoryHelper(rawFilesDir);
+  await loadDataIntoMemoryHelper(drugRawFilesDir);
 
   //
   console.log(
     `> Description file loaded. It has ${Object.keys(definitions).length} rows.`
   );
-  console.log('> Writing the description data to 2 JSON files...');
+  console.log('> Writing the description data to 2 JSON files.');
+  console.log('> First is defs-readable.json...');
 
-  return new Promise((resolve) => {
-    let done = 0;
+  await new Promise((resolve) => {
+    const readableJsonStream = new JsonStreamStringify(definitions, null, 2);
+    const streamReadable = createWriteStream(ensureDir(readableDefinitionFile));
+    readableJsonStream.pipe(streamReadable);
+    readableJsonStream.on('end', () => {
+      console.log('> defs-readable.json written');
+      return resolve();
+    });
+  });
+
+  console.log('> Now defs.json...');
+  await new Promise((resolve) => {
     const jsonStream = new JsonStreamStringify(definitions);
 
     const stream = createWriteStream(ensureDir(definitionFile));
     jsonStream.pipe(stream);
     jsonStream.on('end', () => {
       console.log('> defs.json written');
-      done++;
-      if (done === 2) return resolve({ dirName });
-    });
-
-    const readableJsonStream = new JsonStreamStringify(definitions, null, 2);
-    const streamReadable = createWriteStream(ensureDir(readableDefinitionFile));
-    readableJsonStream.pipe(streamReadable);
-    readableJsonStream.on('end', () => {
-      console.log('> defs-readable.json written');
-      done++;
-      if (done === 2) return resolve({ dirName });
+      return resolve();
     });
   });
+
+  return { dirName, drugDirName };
 }
 
-function copyToLatest({ dirName }) {
+function copyToLatest({ dirName, drugDirName }) {
   const {
     latestDefsFile,
     latestReadableDefsFile,
     definitionFile,
     readableDefinitionFile,
-  } = getFileNames(dirName);
+  } = getFileNames({ dirName, drugDirName });
 
   console.log('> Copying defs.json to latest directory...');
   // just copy to latest
