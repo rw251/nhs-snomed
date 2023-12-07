@@ -29,14 +29,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let Cookie;
 
 const FILES_DIR = path.join(__dirname, 'files');
-const ZIP_DIR = path.join(FILES_DIR, 'zip');
-const RAW_DIR = path.join(FILES_DIR, 'raw');
-const PROCESSED_DIR = path.join(FILES_DIR, 'processed');
+const ZIP_DIR = ensureDir(path.join(FILES_DIR, 'zip/'), true);
+const RAW_DIR = ensureDir(path.join(FILES_DIR, 'raw'), true);
+const PROCESSED_DIR = ensureDir(path.join(FILES_DIR, 'processed'), true);
 
 const existingFiles = readdirSync(ZIP_DIR);
 
-function ensureDir(filePath) {
-  mkdirSync(path.dirname(filePath), { recursive: true });
+function ensureDir(filePath, isDir) {
+  mkdirSync(isDir ? filePath : path.dirname(filePath), { recursive: true });
   return filePath;
 }
 
@@ -86,66 +86,45 @@ async function getLatestUrl() {
   const downloads = html
     .match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g)
     .map((url) => {
-      const [, zipFileName] = url.match(/\/([^/]+).zip/);
+      const [, zipFileName] = url.match(/\/([^/]+.zip)/);
       return { url, zipFileName };
     });
-  // if (existingFiles.length === 0) {
-  //   // first time
-  //   return { url: downloads[0].url, isFirst: true };
-  // } else {
-  //   let minIndex = Number.MAX_SAFE_INTEGER;
-  //   downloads.forEach(({ url, zipFileName }, i) => {
-  //     if (existingFiles.indexOf(zipFileName) > -1) {
-  //       minIndex = Math.min(i, minIndex);
-  //     }
-  //   });
-  //   if (minIndex < 0 || minIndex === Number.MAX_SAFE_INTEGER) {
-  //     console.log(
-  //       `Something strange going on with download list. Was expecting to find previous downloads there but haven't as the minIndex is: ${minIndex}`
-  //     );
-  //     process.exit();
-  //   }
-  //   if (minIndex === 0) return { url: downloads[0], isFirst: false };
-  //   else return { url: downloads[minIndex - 1], isFirst: false };
-  // }
-  const latest =
-    'https://isd.digital.nhs.uk/download/api/v1/keys/b851973bc9f1c7db67dea4f6504cd62f51847376/content/items/101/uk_sct2cl_37.0.0_20230927000001Z.zip?consumer=webapp-releases-page';
-  return { url: latest, isFirst: true };
+
+  return { url: downloads[0].url };
 }
 
-async function downloadIfNotExists({ url, isFirst }) {
+async function downloadIfNotExists({ url }) {
   await login();
 
-  const filename = url.split('/').reverse()[0].split('?')[0];
-  console.log(`> The most recent zip file on TRUD is ${filename}`);
+  const zipFileName = url.split('/').reverse()[0].split('?')[0];
+  console.log(`> Target zip file on TRUD is ${zipFileName}`);
 
-  if (existingFiles.indexOf(filename) > -1) {
+  if (existingFiles.indexOf(zipFileName) > -1) {
     console.log(`> The zip file already exists so no need to download again.`);
-    return { filename, isFirst };
+    return { zipFileName };
   }
 
   console.log(`> That zip is not stored locally. Downloading...`);
-  const outputFile = path.join(ZIP_DIR, filename);
+  const outputFile = path.join(ZIP_DIR, zipFileName);
   const stream = createWriteStream(ensureDir(outputFile));
   const { body } = await fetch(url, { headers: { Cookie } });
   await finished(Readable.fromWeb(body).pipe(stream));
   console.log(`> File downloaded.`);
-  return { filename, isFirst };
+  return { zipFileName };
 }
 
-async function extractZip({ filename: zipFile, isFirst }) {
-  // isFirst = true;
-  const name = zipFile.replace('.zip', '');
-  const file = path.join(ZIP_DIR, zipFile);
-  const outDir = path.join(RAW_DIR, name);
+async function extractZip({ zipFileName }) {
+  const dirName = zipFileName.replace('.zip', '');
+  const file = path.join(ZIP_DIR, zipFileName);
+  const outDir = path.join(RAW_DIR, dirName);
   if (existsSync(outDir)) {
     console.log(
       `> The directory ${outDir} already exists, so I'm not unzipping.`
     );
-    return { filename: name, isFirst };
+    return { dirName };
   }
   console.log(`> The directory ${outDir} does not yet exist. Creating...`);
-  ensureDir(outDir);
+  ensureDir(outDir, true);
   console.log(`> Extracting files from the zip...`);
   let toUnzip = 0;
   let unzipped = 0;
@@ -154,10 +133,7 @@ async function extractZip({ filename: zipFile, isFirst }) {
     createReadStream(file)
       .pipe(unzip.Parse())
       .on('entry', function (entry) {
-        if (
-          isFirst &&
-          entry.path.toLowerCase().match(/full.+sct2_description/)
-        ) {
+        if (entry.path.toLowerCase().match(/full.+sct2_description/)) {
           console.log(`> Extracting ${entry.path}...`);
           toUnzip++;
           const outputFilePath = path.join(outDir, entry.path);
@@ -183,7 +159,7 @@ async function extractZip({ filename: zipFile, isFirst }) {
       });
   });
   console.log(`> ${unzipped} files extracted.`);
-  return { filename: name, isFirst };
+  return { dirName };
 }
 
 function getFileNames(dir, startingFromProjectDir) {
@@ -212,25 +188,25 @@ function getFileNames(dir, startingFromProjectDir) {
   };
 }
 
-async function loadDataIntoMemory({ filename: dir, isFirst }) {
+async function loadDataIntoMemory({ dirName }) {
   const {
     processedFilesDirFromRoot,
     rawFilesDir,
     definitionFile,
     readableDefinitionFile,
-  } = getFileNames(dir);
+  } = getFileNames(dirName);
   if (existsSync(definitionFile) && existsSync(readableDefinitionFile)) {
     console.log(`> The json files already exist so I'll move on...`);
-    return { dir, isFirst };
+    return { dirName };
   }
-  ensureDir(processedFilesDirFromRoot);
+  ensureDir(processedFilesDirFromRoot, true);
 
   const definitions = {};
   for (let directory of readdirSync(rawFilesDir)) {
     const descriptionFileDir = path.join(
       rawFilesDir,
       directory,
-      isFirst ? 'Full' : 'Delta',
+      'Full',
       'Terminology'
     );
     const descriptionFile = path.join(
@@ -285,6 +261,7 @@ async function loadDataIntoMemory({ filename: dir, isFirst }) {
   console.log(
     `> Description file loaded. It has ${Object.keys(definitions).length} rows.`
   );
+  console.log('> Writing the description data to 2 JSON files...');
 
   return new Promise((resolve) => {
     let done = 0;
@@ -295,7 +272,7 @@ async function loadDataIntoMemory({ filename: dir, isFirst }) {
     jsonStream.on('end', () => {
       console.log('> defs.json written');
       done++;
-      if (done === 2) return resolve({ dir, isFirst });
+      if (done === 2) return resolve({ dirName });
     });
 
     const readableJsonStream = new JsonStreamStringify(definitions, null, 2);
@@ -304,69 +281,25 @@ async function loadDataIntoMemory({ filename: dir, isFirst }) {
     readableJsonStream.on('end', () => {
       console.log('> defs-readable.json written');
       done++;
-      if (done === 2) return resolve({ dir, isFirst });
+      if (done === 2) return resolve({ dirName });
     });
   });
 }
 
-function combineLatest({ dir, isFirst }) {
+function copyToLatest({ dirName }) {
   const {
     latestDefsFile,
     latestReadableDefsFile,
     definitionFile,
     readableDefinitionFile,
-  } = getFileNames(dir);
-  if (isFirst) {
-    console.log('> This is the first time, so copy the json files to latest.');
-    console.log('> Copying defs.json...');
-    // just copy to latest
-    copyFileSync(definitionFile, ensureDir(latestDefsFile));
-    console.log('> Copying defs-readable.json...');
-    copyFileSync(readableDefinitionFile, ensureDir(latestReadableDefsFile));
-    console.log('> All files copied.');
-  } else {
-    // load latest
-    console.log(`> Loading latest defs.json file...`);
-    const latestDefs = JSON.parse(readFileSync(latestDefsFile, 'utf8'));
+  } = getFileNames(dirName);
 
-    // load update
-    console.log(`> Loading updated defs...`);
-    const defs = JSON.parse(readFileSync(definitionFile, 'utf8'));
-
-    console.log(`> Both files loaded`);
-
-    Object.entries(defs).forEach(([conceptId, data]) => {
-      if (!latestDefs[conceptId]) {
-        latestDefs[conceptId] = data;
-      } else {
-        Object.keys(data).forEach((descriptionId) => {
-          if (!latestDefs[conceptId][descriptionId])
-            latestDefs[conceptId][descriptionId] = data[descriptionId];
-          else if (
-            data[descriptionId].e > latestDefs[conceptId][descriptionId].e
-          ) {
-            latestDefs[conceptId][descriptionId] = data[descriptionId];
-          }
-        });
-      }
-    });
-
-    console.log('> Writing updated files...');
-    const jsonStream = new JsonStreamStringify(latestDefs);
-
-    const stream = createWriteStream(ensureDir(latestDefsFile));
-    jsonStream.pipe(stream);
-    jsonStream.on('end', () =>
-      console.log('> Latest defs.json written to file.')
-    );
-
-    const readableJsonStream = new JsonStreamStringify(latestDefs, null, 2);
-    const streamReadable = createWriteStream(ensureDir(latestReadableDefsFile));
-    readableJsonStream.pipe(streamReadable);
-    readableJsonStream.on('end', () =>
-      console.log('> Latest defs-readable.json written to file.')
-    );
-  }
+  console.log('> Copying defs.json to latest directory...');
+  // just copy to latest
+  copyFileSync(definitionFile, ensureDir(latestDefsFile));
+  console.log('> Copying defs-readable.json to latest directory...');
+  copyFileSync(readableDefinitionFile, ensureDir(latestReadableDefsFile));
+  console.log('> All files copied.');
 }
 
 // Get latest TRUD version
@@ -374,4 +307,4 @@ getLatestUrl()
   .then(downloadIfNotExists)
   .then(extractZip)
   .then(loadDataIntoMemory)
-  .then(combineLatest);
+  .then(copyToLatest);
