@@ -1,6 +1,6 @@
 # SNOMED descriptions
 
-Execute `node index.js` to pull the latest SNOMED zip file and extract all the definitions.
+Execute `node --max-old-space-size=4096 index.js` to pull the latest SNOMED zip file and extract all the definitions. I could probably avoid needing to up the memory allocation if I did descriptions and relationships separately, but good enough for now.
 
 Initially this script would only get the "Delta" release, but that doesn't exist for the international SNOMED files so we just use the "Full" release each time. This is fine because the way the files are structured means that a new file contains all lines of the previous file, plus some additions i.e. there are no deletions or modifications to existing lines.
 

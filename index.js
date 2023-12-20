@@ -16,6 +16,9 @@ import {
   createReadStream,
   copyFileSync,
 } from 'fs';
+import { once } from 'node:events';
+import readline from 'readline';
+
 import { JsonStreamStringify } from 'json-stream-stringify';
 import { Readable } from 'stream';
 import { finished } from 'stream/promises';
@@ -151,7 +154,10 @@ async function extractZipHelper(zipFileName) {
     createReadStream(file)
       .pipe(unzip.Parse())
       .on('entry', function (entry) {
-        if (entry.path.toLowerCase().match(/full.+sct2_description/)) {
+        if (
+          entry.path.toLowerCase().match(/full.+sct2_description/) ||
+          entry.path.toLowerCase().match(/full.+sct2_relationship_/)
+        ) {
           console.log(`> Extracting ${entry.path}...`);
           toUnzip++;
           const outputFilePath = path.join(outDir, entry.path);
@@ -198,11 +204,20 @@ function getFileNames({ dirName, drugDirName }) {
     processedFilesDir,
     'defs-readable.json'
   );
+
+  const relationsFile = path.join(processedFilesDir, 'relationships.json');
+  const readableRelationsFile = path.join(
+    processedFilesDir,
+    'relationships-readable.json'
+  );
+
   return {
     rawFilesDir,
     drugRawFilesDir,
     definitionFile,
     readableDefinitionFile,
+    relationsFile,
+    readableRelationsFile,
     processedFilesDir,
     processedFilesDirFromRoot,
     latestDefsFile: path.join(PROCESSED_DIR, 'latest', 'defs.json'),
@@ -211,10 +226,22 @@ function getFileNames({ dirName, drugDirName }) {
       'latest',
       'defs-readable.json'
     ),
+    latestRelationsFile: path.join(
+      PROCESSED_DIR,
+      'latest',
+      'relationships.json'
+    ),
+    latestReadableRelationsFile: path.join(
+      PROCESSED_DIR,
+      'latest',
+      'relationships-readable.json'
+    ),
   };
 }
 
 let definitions = {};
+let relationships = {};
+let relationshipTEMP = {};
 async function loadDataIntoMemoryHelper(rawFilesDir) {
   for (let directory of readdirSync(rawFilesDir)) {
     const descriptionFileDir = path.join(
@@ -269,6 +296,66 @@ async function loadDataIntoMemoryHelper(rawFilesDir) {
           }
         }
       });
+
+    const relationshipFileDir = path.join(
+      rawFilesDir,
+      directory,
+      'Full',
+      'Terminology'
+    );
+    const relationshipFile = path.join(
+      relationshipFileDir,
+      readdirSync(relationshipFileDir)[1]
+    );
+
+    console.log(`> Reading the relationship file ${relationshipFile}...`);
+
+    const rl = readline.createInterface({
+      input: createReadStream(relationshipFile),
+      terminal: false,
+    });
+
+    rl.on('line', (line) => {
+      const [
+        id,
+        effectiveTime,
+        active,
+        moduleId,
+        sourceId,
+        destinationId,
+        relationshipGroup,
+        typeId,
+        characteristicTypeId,
+        modifierId,
+      ] = line.replace(/\r/g, '').split('\t');
+      if (id === 'id' || id === '' || typeId !== '116680003') return;
+      if (!relationshipTEMP[id]) {
+        relationshipTEMP[id] = {
+          active,
+          effectiveTime,
+          sourceId,
+          destinationId,
+        };
+      } else {
+        if (effectiveTime > relationshipTEMP[id].effectiveTime) {
+          relationshipTEMP[id].active = active;
+          relationshipTEMP[id].effectiveTime = effectiveTime;
+          relationshipTEMP[id].sourceId = sourceId;
+          relationshipTEMP[id].destinationId = destinationId;
+        }
+      }
+    });
+
+    await once(rl, 'close');
+
+    Object.values(relationshipTEMP).forEach(
+      ({ active, sourceId, destinationId }) => {
+        if (active === '1') {
+          if (!relationships[destinationId]) relationships[destinationId] = {};
+          relationships[destinationId][sourceId] = true;
+        }
+      }
+    );
   }
 }
 
@@ -279,8 +366,15 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
     readableDefinitionFile,
     rawFilesDir,
     drugRawFilesDir,
+    relationsFile,
+    readableRelationsFile,
   } = getFileNames({ dirName, drugDirName });
-  if (existsSync(definitionFile) && existsSync(readableDefinitionFile)) {
+  if (
+    existsSync(definitionFile) &&
+    existsSync(readableDefinitionFile) &&
+    existsSync(relationsFile) &&
+    existsSync(readableRelationsFile)
+  ) {
     console.log(`> The json files already exist so I'll move on...`);
     return { dirName, drugDirName };
   }
@@ -318,6 +412,36 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
     });
   });
 
+  console.log(
+    `> Relationships file loaded. It has ${
+      Object.keys(relationships).length
+    } rows.`
+  );
+  console.log('> Writing the relationship data to 2 JSON files.');
+  console.log('> First is relationships-readable.json...');
+
+  await new Promise((resolve) => {
+    const readableJsonStream = new JsonStreamStringify(relationships, null, 2);
+    const streamReadable = createWriteStream(ensureDir(readableRelationsFile));
+    readableJsonStream.pipe(streamReadable);
+    readableJsonStream.on('end', () => {
+      console.log('> relationships-readable.json written');
+      return resolve();
+    });
+  });
+
+  console.log('> Now defs.json...');
+  await new Promise((resolve) => {
+    const jsonStream = new JsonStreamStringify(relationships);
+
+    const stream = createWriteStream(ensureDir(relationsFile));
+    jsonStream.pipe(stream);
+    jsonStream.on('end', () => {
+      console.log('> relationships.json written');
+      return resolve();
+    });
+  });
+
   return { dirName, drugDirName };
 }
 
@@ -327,6 +451,10 @@ function copyToLatest({ dirName, drugDirName }) {
     latestReadableDefsFile,
     definitionFile,
     readableDefinitionFile,
+    latestRelationsFile,
+    latestReadableRelationsFile,
+    relationsFile,
+    readableRelationsFile,
   } = getFileNames({ dirName, drugDirName });
 
   console.log('> Copying defs.json to latest directory...');
@@ -334,6 +462,11 @@ function copyToLatest({ dirName, drugDirName }) {
   copyFileSync(definitionFile, ensureDir(latestDefsFile));
   console.log('> Copying defs-readable.json to latest directory...');
   copyFileSync(readableDefinitionFile, ensureDir(latestReadableDefsFile));
+  console.log('> Copying relationships.json to latest directory...');
+  // just copy to latest
+  copyFileSync(relationsFile, ensureDir(latestRelationsFile));
+  console.log('> Copying relationships-readable.json to latest directory...');
+  copyFileSync(readableRelationsFile, ensureDir(latestReadableRelationsFile));
   console.log('> All files copied.');
 }
 
