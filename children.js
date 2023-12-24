@@ -88,11 +88,17 @@ const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
-const prompt = () =>
+const prompt = (isFirst) =>
   new Promise((resolve) =>
-    rl.question('Enter the SNOMED code to get all its descendants:', resolve)
+    rl.question(
+      isFirst
+        ? 'Enter the SNOMED code to get all its descendants:'
+        : "Enter 'n' to copy the codes without the hierarchy indenting, or enter another SNOMED code to go again:",
+      resolve
+    )
   );
 
+let outputNoIndenting;
 function displayDescendants(snomedId) {
   let ans = [];
   let queue = [{ code: snomedId, level: 0 }];
@@ -108,6 +114,9 @@ function displayDescendants(snomedId) {
     );
   }
 
+  outputNoIndenting = ans
+    .map((x) => `${x.code}\t${getBestDefinition(x.code)}`)
+    .join('\n');
   const output = ans
     .map(
       (x) =>
@@ -121,9 +130,15 @@ function displayDescendants(snomedId) {
 }
 
 async function go() {
+  let isFirst = true;
   while (true) {
-    const snomedId = await prompt();
-    displayDescendants(snomedId);
+    const snomedId = await prompt(isFirst);
+    isFirst = false;
+    if (snomedId === 'n') {
+      spawn('clip').stdin.end(outputNoIndenting);
+    } else {
+      if (SNOMED_DEFINITIONS[snomedId]) displayDescendants(snomedId);
+    }
   }
 }
 
