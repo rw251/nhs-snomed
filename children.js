@@ -98,6 +98,14 @@ const prompt = (isFirst) =>
     )
   );
 
+function copyToClipboard(content){
+  if(process.platform === 'linux') {
+    spawn('xclip', ['-sel', 'clip']).stdin.end(content);
+  } else {
+    spawn('clip').stdin.end(content);
+  }
+}
+
 let outputNoIndenting;
 function displayDescendants(snomedId) {
   let ans = [];
@@ -126,7 +134,7 @@ function displayDescendants(snomedId) {
     )
     .join('\n');
   console.log(`${output}\n\n Also copied to clipboard.\n`);
-  spawn('clip').stdin.end(output);
+  copyToClipboard(output);
 }
 
 async function go() {
@@ -135,7 +143,7 @@ async function go() {
     const snomedId = await prompt(isFirst);
     isFirst = false;
     if (snomedId === 'n') {
-      spawn('clip').stdin.end(outputNoIndenting);
+      copyToClipboard(outputNoIndenting);
     } else {
       if (SNOMED_DEFINITIONS[snomedId]) displayDescendants(snomedId);
     }
