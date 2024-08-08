@@ -1,3 +1,15 @@
+/**
+ * A quick script to determine if there are differences between SNOMED releases.
+ * Of particular importance is whether codes disappear, or are simply marked as
+ * inactive.
+ *
+ * Turns out that each new release only adds rows, it does not change any existing
+ * rows. If a code has changed, then a new row with the same id is added. To
+ * determine the current description for a code, or whether it is active or inactive
+ * you must find all of the same ids, and take the one with the most recent
+ * effectiveTime.
+ */
+
 import {
   existsSync,
   mkdirSync,

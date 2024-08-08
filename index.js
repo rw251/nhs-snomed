@@ -199,6 +199,7 @@ function getFileNames({ dirName, drugDirName }) {
   const drugRawFilesDir = path.join(RAW_DIR, drugDirName);
   const processedFilesDirFromRoot = path.join(PROCESSED_DIR, snomedId);
   const processedFilesDir = path.join('files', 'processed', snomedId);
+  const singleDefinitionFile = path.join(processedFilesDir, 'defs-single.json');
   const definitionFile = path.join(processedFilesDir, 'defs.json');
   const readableDefinitionFile = path.join(
     processedFilesDir,
@@ -215,6 +216,7 @@ function getFileNames({ dirName, drugDirName }) {
     rawFilesDir,
     drugRawFilesDir,
     definitionFile,
+    singleDefinitionFile,
     readableDefinitionFile,
     relationsFile,
     readableRelationsFile,
@@ -225,6 +227,11 @@ function getFileNames({ dirName, drugDirName }) {
       PROCESSED_DIR,
       'latest',
       'defs-readable.json'
+    ),
+    latestSingleDefsFile: path.join(
+      PROCESSED_DIR,
+      'latest',
+      'defs-single.json'
     ),
     latestRelationsFile: path.join(
       PROCESSED_DIR,
@@ -242,6 +249,55 @@ function getFileNames({ dirName, drugDirName }) {
 let definitions = {};
 let relationships = {};
 let relationshipTEMP = {};
+function getBestDefinition(conceptId) {
+  // if we have any that are active AND main then pick most recent
+  const activeAndMainDef = Object.values(definitions[conceptId])
+    .filter((data) => data.a && data.m)
+    .sort((a, b) => {
+      if (a.e > b.e) return -1;
+      return a.e === b.e ? 0 : 1;
+    });
+
+  if (activeAndMainDef.length > 0) {
+    return activeAndMainDef[0].t;
+  }
+
+  // if no mains, but some actives, pick most recent
+  const activeAndSynDef = Object.values(definitions[conceptId])
+    .filter((data) => data.a && !data.m)
+    .sort((a, b) => {
+      if (a.e > b.e) return -1;
+      return a.e === b.e ? 0 : 1;
+    });
+
+  if (activeAndSynDef.length > 0) {
+    return activeAndSynDef[0].t;
+  }
+
+  // if main but no actives, pick most recent
+  const inactiveAndMainDef = Object.values(definitions[conceptId])
+    .filter((data) => !data.a && data.m)
+    .sort((a, b) => {
+      if (a.e > b.e) return -1;
+      return a.e === b.e ? 0 : 1;
+    });
+
+  if (inactiveAndMainDef.length > 0) {
+    return inactiveAndMainDef[0].t;
+  }
+
+  // no main and no active - investigate
+  const inactiveAndMSynDef = Object.values(definitions[conceptId])
+    .filter((data) => !data.a && !data.m)
+    .sort((a, b) => {
+      if (a.e > b.e) return -1;
+      return a.e === b.e ? 0 : 1;
+    });
+
+  if (inactiveAndMSynDef.length > 0) {
+    return inactiveAndMSynDef[0].t;
+  }
+}
 async function loadDataIntoMemoryHelper(rawFilesDir) {
   for (let directory of readdirSync(rawFilesDir)) {
     const descriptionFileDir = path.join(
@@ -363,6 +419,7 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
   const {
     processedFilesDirFromRoot,
     definitionFile,
+    singleDefinitionFile,
     readableDefinitionFile,
     rawFilesDir,
     drugRawFilesDir,
@@ -371,6 +428,7 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
   } = getFileNames({ dirName, drugDirName });
   if (
     existsSync(definitionFile) &&
+    existsSync(singleDefinitionFile) &&
     existsSync(readableDefinitionFile) &&
     existsSync(relationsFile) &&
     existsSync(readableRelationsFile)
@@ -387,7 +445,7 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
   console.log(
     `> Description file loaded. It has ${Object.keys(definitions).length} rows.`
   );
-  console.log('> Writing the description data to 2 JSON files.');
+  console.log('> Writing the description data to 3 JSON files.');
   console.log('> First is defs-readable.json...');
 
   await new Promise((resolve) => {
@@ -413,6 +471,26 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
   });
 
   console.log(
+    '> Create a new lookup with just one definition per concept id...'
+  );
+  const bestDefs = {};
+  Object.keys(definitions).forEach((conceptId) => {
+    bestDefs[conceptId] = getBestDefinition(conceptId);
+  });
+
+  console.log('> Now defs-single.json...');
+  await new Promise((resolve) => {
+    const jsonStream = new JsonStreamStringify(bestDefs);
+
+    const stream = createWriteStream(ensureDir(singleDefinitionFile));
+    jsonStream.pipe(stream);
+    jsonStream.on('end', () => {
+      console.log('> defs-single.json written');
+      return resolve();
+    });
+  });
+
+  console.log(
     `> Relationships file loaded. It has ${
       Object.keys(relationships).length
     } rows.`
@@ -430,7 +508,7 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
     });
   });
 
-  console.log('> Now defs.json...');
+  console.log('> Now relationships.json...');
   await new Promise((resolve) => {
     const jsonStream = new JsonStreamStringify(relationships);
 
@@ -450,7 +528,9 @@ function copyToLatest({ dirName, drugDirName }) {
     latestDefsFile,
     latestReadableDefsFile,
     definitionFile,
+    singleDefinitionFile,
     readableDefinitionFile,
+    latestSingleDefsFile,
     latestRelationsFile,
     latestReadableRelationsFile,
     relationsFile,
@@ -462,6 +542,8 @@ function copyToLatest({ dirName, drugDirName }) {
   copyFileSync(definitionFile, ensureDir(latestDefsFile));
   console.log('> Copying defs-readable.json to latest directory...');
   copyFileSync(readableDefinitionFile, ensureDir(latestReadableDefsFile));
+  console.log('> Copying defs-single.json to latest directory...');
+  copyFileSync(singleDefinitionFile, ensureDir(latestSingleDefsFile));
   console.log('> Copying relationships.json to latest directory...');
   // just copy to latest
   copyFileSync(relationsFile, ensureDir(latestRelationsFile));

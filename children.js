@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 console.log('> Loading definitions...');
 const SNOMED_DEFINITIONS = JSON.parse(
   fs.readFileSync(
-    path.join(__dirname, 'files', 'processed', 'latest', 'defs.json'),
+    path.join(__dirname, 'files', 'processed', 'latest', 'defs-single.json'),
     'utf8'
   )
 );
@@ -115,14 +115,14 @@ function displayDescendants(snomedId) {
   }
 
   outputNoIndenting = ans
-    .map((x) => `${x.code}\t${getBestDefinition(x.code)}`)
+    .map((x) => `${x.code}\t${SNOMED_DEFINITIONS[x.code]}`)
     .join('\n');
   const output = ans
     .map(
       (x) =>
-        `${new Array(x.level).fill('>').join('')}${x.code}\t${getBestDefinition(
-          x.code
-        )}`
+        `${new Array(x.level).fill('>').join('')}${x.code}\t${
+          SNOMED_DEFINITIONS[x.code]
+        }`
     )
     .join('\n');
   console.log(`${output}\n\n Also copied to clipboard.\n`);
