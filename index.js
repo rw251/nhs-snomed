@@ -15,26 +15,26 @@ import {
   createWriteStream,
   createReadStream,
   copyFileSync,
-} from 'fs';
-import { once } from 'node:events';
-import readline from 'readline';
+} from "fs";
+import { once } from "node:events";
+import readline from "readline";
 
-import { JsonStreamStringify } from 'json-stream-stringify';
-import { Readable } from 'stream';
-import { finished } from 'stream/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import 'dotenv/config';
-import unzip from 'unzip-stream';
+import { JsonStreamStringify } from "json-stream-stringify";
+import { Readable } from "stream";
+import { finished } from "stream/promises";
+import path from "path";
+import { fileURLToPath } from "url";
+import "dotenv/config";
+import unzip from "unzip-stream";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let Cookie;
 
-const FILES_DIR = path.join(__dirname, 'files');
-const ZIP_DIR = ensureDir(path.join(FILES_DIR, 'zip/'), true);
-const RAW_DIR = ensureDir(path.join(FILES_DIR, 'raw'), true);
-const PROCESSED_DIR = ensureDir(path.join(FILES_DIR, 'processed'), true);
+const FILES_DIR = path.join(__dirname, "files");
+const ZIP_DIR = ensureDir(path.join(FILES_DIR, "zip/"), true);
+const RAW_DIR = ensureDir(path.join(FILES_DIR, "raw"), true);
+const PROCESSED_DIR = ensureDir(path.join(FILES_DIR, "processed"), true);
 
 const existingFiles = readdirSync(ZIP_DIR);
 
@@ -44,11 +44,11 @@ function ensureDir(filePath, isDir) {
 }
 
 if (!process.env.email) {
-  console.log('Need email=xxx in the .env file');
+  console.log("Need email=xxx in the .env file");
   process.exit();
 }
 if (!process.env.password) {
-  console.log('Need password=xxx in the .env file');
+  console.log("Need password=xxx in the .env file");
   process.exit();
 }
 
@@ -57,44 +57,54 @@ async function login() {
   const email = process.env.email;
   const password = process.env.password;
 
-  console.log('> Logging in to TRUD...');
-  const result = await fetch(
-    'https://isd.digital.nhs.uk/trud/security/j_spring_security_check',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      redirect: 'manual',
-      body: new URLSearchParams({
-        j_username: email,
-        j_password: password,
-        commit: 'LOG+IN',
-      }),
-    }
-  );
+  console.log("> Logging in to TRUD...");
+
+  // Get initial session id by going to the login page
+
+  const loginPage = await fetch("https://isd.digital.nhs.uk/trud/users/guest/filters/0/login/form");
+  const sessionIdCookie = loginPage.headers
+    .getSetCookie()
+    .filter((x) => x.indexOf("JSESSIONID") > -1)[0]
+    .match(/JSESSIONID=([^ ;]+);/)[0];
+
+  const csrfToken = (await loginPage.text()).match(/_csrf" *value="([^"]+)"/)[1];
+
+  const result = await fetch("https://isd.digital.nhs.uk/trud/security/j_spring_security_check", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: sessionIdCookie,
+    },
+    redirect: "manual",
+    body: new URLSearchParams({
+      _csrf: csrfToken,
+      username: email,
+      password: password,
+      commit: "",
+    }),
+  });
   const cookies = result.headers.getSetCookie();
-  const cookie = cookies.filter((x) => x.indexOf('JSESSIONID') > -1)[0];
-  console.log('> Logged in, and cookie cached.');
+  const cookie = cookies
+    .filter((x) => x.indexOf("JSESSIONID") > -1)[0]
+    .match(/JSESSIONID=([^ ;]+);/)[0];
+  console.log("> Logged in, and cookie cached.");
   Cookie = cookie;
 }
 
 async function getLatestUrl() {
   await login();
   const response = await fetch(
-    'https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/101/releases',
+    "https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/101/releases",
     { headers: { Cookie } }
   );
   const html = await response.text();
-  const downloads = html
-    .match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g)
-    .map((url) => {
-      const [, zipFileName] = url.match(/\/([^/]+.zip)/);
-      return { url, zipFileName };
-    });
+  const downloads = html.match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g).map((url) => {
+    const [, zipFileName] = url.match(/\/([^/]+.zip)/);
+    return { url, zipFileName };
+  });
 
   const drugResponse = await fetch(
-    'https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/105/releases',
+    "https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/105/releases",
     { headers: { Cookie } }
   );
   const drugHtml = await drugResponse.text();
@@ -111,7 +121,7 @@ async function getLatestUrl() {
 async function downloadIfNotExistsHelper(url) {
   await login();
 
-  const zipFileName = url.split('/').reverse()[0].split('?')[0];
+  const zipFileName = url.split("/").reverse()[0].split("?")[0];
   console.log(`> Target zip file on TRUD is ${zipFileName}`);
 
   if (existingFiles.indexOf(zipFileName) > -1) {
@@ -135,13 +145,11 @@ async function downloadIfNotExists({ url, drugUrl }) {
 }
 
 async function extractZipHelper(zipFileName) {
-  const dirName = zipFileName.replace('.zip', '');
+  const dirName = zipFileName.replace(".zip", "");
   const file = path.join(ZIP_DIR, zipFileName);
   const outDir = path.join(RAW_DIR, dirName);
   if (existsSync(outDir)) {
-    console.log(
-      `> The directory ${outDir} already exists, so I'm not unzipping.`
-    );
+    console.log(`> The directory ${outDir} already exists, so I'm not unzipping.`);
     return dirName;
   }
   console.log(`> The directory ${outDir} does not yet exist. Creating...`);
@@ -153,7 +161,7 @@ async function extractZipHelper(zipFileName) {
   await new Promise((resolve) => {
     createReadStream(file)
       .pipe(unzip.Parse())
-      .on('entry', function (entry) {
+      .on("entry", function (entry) {
         if (
           entry.path.toLowerCase().match(/full.+sct2_description/) ||
           entry.path.toLowerCase().match(/full.+sct2_relationship_/)
@@ -162,7 +170,7 @@ async function extractZipHelper(zipFileName) {
           toUnzip++;
           const outputFilePath = path.join(outDir, entry.path);
           const outStream = createWriteStream(ensureDir(outputFilePath));
-          outStream.on('finish', () => {
+          outStream.on("finish", () => {
             console.log(`> Extracted ${entry.path}.`);
             unzipped++;
             if (isRead && toUnzip === unzipped) {
@@ -174,7 +182,7 @@ async function extractZipHelper(zipFileName) {
           entry.autodrain();
         }
       })
-      .on('end', () => {
+      .on("end", () => {
         console.log(`> Finished reading zip file.`);
         isRead = true;
         if (toUnzip === unzipped) {
@@ -198,19 +206,13 @@ function getFileNames({ dirName, drugDirName }) {
   const rawFilesDir = path.join(RAW_DIR, dirName);
   const drugRawFilesDir = path.join(RAW_DIR, drugDirName);
   const processedFilesDirFromRoot = path.join(PROCESSED_DIR, snomedId);
-  const processedFilesDir = path.join('files', 'processed', snomedId);
-  const singleDefinitionFile = path.join(processedFilesDir, 'defs-single.json');
-  const definitionFile = path.join(processedFilesDir, 'defs.json');
-  const readableDefinitionFile = path.join(
-    processedFilesDir,
-    'defs-readable.json'
-  );
+  const processedFilesDir = path.join("files", "processed", snomedId);
+  const singleDefinitionFile = path.join(processedFilesDir, "defs-single.json");
+  const definitionFile = path.join(processedFilesDir, "defs.json");
+  const readableDefinitionFile = path.join(processedFilesDir, "defs-readable.json");
 
-  const relationsFile = path.join(processedFilesDir, 'relationships.json');
-  const readableRelationsFile = path.join(
-    processedFilesDir,
-    'relationships-readable.json'
-  );
+  const relationsFile = path.join(processedFilesDir, "relationships.json");
+  const readableRelationsFile = path.join(processedFilesDir, "relationships-readable.json");
 
   return {
     rawFilesDir,
@@ -222,27 +224,11 @@ function getFileNames({ dirName, drugDirName }) {
     readableRelationsFile,
     processedFilesDir,
     processedFilesDirFromRoot,
-    latestDefsFile: path.join(PROCESSED_DIR, 'latest', 'defs.json'),
-    latestReadableDefsFile: path.join(
-      PROCESSED_DIR,
-      'latest',
-      'defs-readable.json'
-    ),
-    latestSingleDefsFile: path.join(
-      PROCESSED_DIR,
-      'latest',
-      'defs-single.json'
-    ),
-    latestRelationsFile: path.join(
-      PROCESSED_DIR,
-      'latest',
-      'relationships.json'
-    ),
-    latestReadableRelationsFile: path.join(
-      PROCESSED_DIR,
-      'latest',
-      'relationships-readable.json'
-    ),
+    latestDefsFile: path.join(PROCESSED_DIR, "latest", "defs.json"),
+    latestReadableDefsFile: path.join(PROCESSED_DIR, "latest", "defs-readable.json"),
+    latestSingleDefsFile: path.join(PROCESSED_DIR, "latest", "defs-single.json"),
+    latestRelationsFile: path.join(PROCESSED_DIR, "latest", "relationships.json"),
+    latestReadableRelationsFile: path.join(PROCESSED_DIR, "latest", "relationships-readable.json"),
   };
 }
 
@@ -300,19 +286,11 @@ function getBestDefinition(conceptId) {
 }
 async function loadDataIntoMemoryHelper(rawFilesDir) {
   for (let directory of readdirSync(rawFilesDir)) {
-    const descriptionFileDir = path.join(
-      rawFilesDir,
-      directory,
-      'Full',
-      'Terminology'
-    );
-    const descriptionFile = path.join(
-      descriptionFileDir,
-      readdirSync(descriptionFileDir)[0]
-    );
+    const descriptionFileDir = path.join(rawFilesDir, directory, "Full", "Terminology");
+    const descriptionFile = path.join(descriptionFileDir, readdirSync(descriptionFileDir)[0]);
     console.log(`> Reading the description file ${descriptionFile}...`);
-    readFileSync(descriptionFile, 'utf8')
-      .split('\n')
+    readFileSync(descriptionFile, "utf8")
+      .split("\n")
       .forEach((row) => {
         const [
           id,
@@ -324,27 +302,27 @@ async function loadDataIntoMemoryHelper(rawFilesDir) {
           typeId,
           term,
           caseSignificanceId,
-        ] = row.replace(/\r/g, '').split('\t');
-        if (id === 'id' || id === '') return;
+        ] = row.replace(/\r/g, "").split("\t");
+        if (id === "id" || id === "") return;
         if (!definitions[conceptId]) definitions[conceptId] = {};
         if (!definitions[conceptId][id]) {
           definitions[conceptId][id] = { t: term, e: effectiveTime };
-          if (active === '1') {
+          if (active === "1") {
             definitions[conceptId][id].a = 1;
           }
-          if (typeId === '900000000000003001') {
+          if (typeId === "900000000000003001") {
             definitions[conceptId][id].m = 1;
           }
         } else {
           if (effectiveTime > definitions[conceptId][id].e) {
             definitions[conceptId][id].t = term;
             definitions[conceptId][id].e = effectiveTime;
-            if (active === '1') {
+            if (active === "1") {
               definitions[conceptId][id].a = 1;
             } else {
               delete definitions[conceptId][id].a;
             }
-            if (typeId === '900000000000003001') {
+            if (typeId === "900000000000003001") {
               definitions[conceptId][id].m = 1;
             } else {
               delete definitions[conceptId][id].m;
@@ -353,16 +331,8 @@ async function loadDataIntoMemoryHelper(rawFilesDir) {
         }
       });
 
-    const relationshipFileDir = path.join(
-      rawFilesDir,
-      directory,
-      'Full',
-      'Terminology'
-    );
-    const relationshipFile = path.join(
-      relationshipFileDir,
-      readdirSync(relationshipFileDir)[1]
-    );
+    const relationshipFileDir = path.join(rawFilesDir, directory, "Full", "Terminology");
+    const relationshipFile = path.join(relationshipFileDir, readdirSync(relationshipFileDir)[1]);
 
     console.log(`> Reading the relationship file ${relationshipFile}...`);
 
@@ -371,7 +341,7 @@ async function loadDataIntoMemoryHelper(rawFilesDir) {
       terminal: false,
     });
 
-    rl.on('line', (line) => {
+    rl.on("line", (line) => {
       const [
         id,
         effectiveTime,
@@ -383,8 +353,8 @@ async function loadDataIntoMemoryHelper(rawFilesDir) {
         typeId,
         characteristicTypeId,
         modifierId,
-      ] = line.replace(/\r/g, '').split('\t');
-      if (id === 'id' || id === '' || typeId !== '116680003') return;
+      ] = line.replace(/\r/g, "").split("\t");
+      if (id === "id" || id === "" || typeId !== "116680003") return;
       if (!relationshipTEMP[id]) {
         relationshipTEMP[id] = {
           active,
@@ -402,16 +372,14 @@ async function loadDataIntoMemoryHelper(rawFilesDir) {
       }
     });
 
-    await once(rl, 'close');
+    await once(rl, "close");
 
-    Object.values(relationshipTEMP).forEach(
-      ({ active, sourceId, destinationId }) => {
-        if (active === '1') {
-          if (!relationships[destinationId]) relationships[destinationId] = {};
-          relationships[destinationId][sourceId] = true;
-        }
+    Object.values(relationshipTEMP).forEach(({ active, sourceId, destinationId }) => {
+      if (active === "1") {
+        if (!relationships[destinationId]) relationships[destinationId] = {};
+        relationships[destinationId][sourceId] = true;
       }
-    );
+    });
   }
 }
 
@@ -442,80 +410,72 @@ async function loadDataIntoMemory({ dirName, drugDirName }) {
   await loadDataIntoMemoryHelper(drugRawFilesDir);
 
   //
-  console.log(
-    `> Description file loaded. It has ${Object.keys(definitions).length} rows.`
-  );
-  console.log('> Writing the description data to 3 JSON files.');
-  console.log('> First is defs-readable.json...');
+  console.log(`> Description file loaded. It has ${Object.keys(definitions).length} rows.`);
+  console.log("> Writing the description data to 3 JSON files.");
+  console.log("> First is defs-readable.json...");
 
   await new Promise((resolve) => {
     const readableJsonStream = new JsonStreamStringify(definitions, null, 2);
     const streamReadable = createWriteStream(ensureDir(readableDefinitionFile));
     readableJsonStream.pipe(streamReadable);
-    readableJsonStream.on('end', () => {
-      console.log('> defs-readable.json written');
+    readableJsonStream.on("end", () => {
+      console.log("> defs-readable.json written");
       return resolve();
     });
   });
 
-  console.log('> Now defs.json...');
+  console.log("> Now defs.json...");
   await new Promise((resolve) => {
     const jsonStream = new JsonStreamStringify(definitions);
 
     const stream = createWriteStream(ensureDir(definitionFile));
     jsonStream.pipe(stream);
-    jsonStream.on('end', () => {
-      console.log('> defs.json written');
+    jsonStream.on("end", () => {
+      console.log("> defs.json written");
       return resolve();
     });
   });
 
-  console.log(
-    '> Create a new lookup with just one definition per concept id...'
-  );
+  console.log("> Create a new lookup with just one definition per concept id...");
   const bestDefs = {};
   Object.keys(definitions).forEach((conceptId) => {
     bestDefs[conceptId] = getBestDefinition(conceptId);
   });
 
-  console.log('> Now defs-single.json...');
+  console.log("> Now defs-single.json...");
   await new Promise((resolve) => {
     const jsonStream = new JsonStreamStringify(bestDefs);
 
     const stream = createWriteStream(ensureDir(singleDefinitionFile));
     jsonStream.pipe(stream);
-    jsonStream.on('end', () => {
-      console.log('> defs-single.json written');
+    jsonStream.on("end", () => {
+      console.log("> defs-single.json written");
       return resolve();
     });
   });
 
-  console.log(
-    `> Relationships file loaded. It has ${
-      Object.keys(relationships).length
-    } rows.`
-  );
-  console.log('> Writing the relationship data to 2 JSON files.');
-  console.log('> First is relationships-readable.json...');
+  console.log(`> Relationships file loaded. It has ${Object.keys(relationships).length} rows.`);
+  console.log("> Writing the relationship data to 2 JSON files.");
+  console.log("> First is relationships-readable.json...");
 
   await new Promise((resolve) => {
     const readableJsonStream = new JsonStreamStringify(relationships, null, 2);
     const streamReadable = createWriteStream(ensureDir(readableRelationsFile));
     readableJsonStream.pipe(streamReadable);
-    readableJsonStream.on('end', () => {
-      console.log('> relationships-readable.json written');
+    readableJsonStream.on("end", () => {
+      console.log("> relationships-readable.json written");
       return resolve();
     });
   });
 
-  console.log('> Now relationships.json...');
+  console.log("> Now relationships.json...");
   await new Promise((resolve) => {
     const jsonStream = new JsonStreamStringify(relationships);
 
     const stream = createWriteStream(ensureDir(relationsFile));
     jsonStream.pipe(stream);
-    jsonStream.on('end', () => {
-      console.log('> relationships.json written');
+    jsonStream.on("end", () => {
+      console.log("> relationships.json written");
       return resolve();
     });
   });
@@ -537,19 +497,19 @@ function copyToLatest({ dirName, drugDirName }) {
     readableRelationsFile,
   } = getFileNames({ dirName, drugDirName });
 
-  console.log('> Copying defs.json to latest directory...');
+  console.log("> Copying defs.json to latest directory...");
   // just copy to latest
   copyFileSync(definitionFile, ensureDir(latestDefsFile));
-  console.log('> Copying defs-readable.json to latest directory...');
+  console.log("> Copying defs-readable.json to latest directory...");
   copyFileSync(readableDefinitionFile, ensureDir(latestReadableDefsFile));
-  console.log('> Copying defs-single.json to latest directory...');
+  console.log("> Copying defs-single.json to latest directory...");
   copyFileSync(singleDefinitionFile, ensureDir(latestSingleDefsFile));
-  console.log('> Copying relationships.json to latest directory...');
+  console.log("> Copying relationships.json to latest directory...");
   // just copy to latest
   copyFileSync(relationsFile, ensureDir(latestRelationsFile));
-  console.log('> Copying relationships-readable.json to latest directory...');
+  console.log("> Copying relationships-readable.json to latest directory...");
   copyFileSync(readableRelationsFile, ensureDir(latestReadableRelationsFile));
-  console.log('> All files copied.');
+  console.log("> All files copied.");
 }
 
 // Get latest TRUD version
