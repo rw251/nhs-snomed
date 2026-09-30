@@ -1,7 +1,6 @@
 /*
- * 1. Gets the latest SNOMED zip file from the TRUD website (unless already downloaded)
- *  - You need a TRUD account
- *  - Put your login detatils in the .env file
+ * 1. Gets the latest SNOMED zip files from the TRUD API (unless already downloaded)
+ *  - Put your TRUD_API_KEY in the .env file
  *  - Make sure you are subscribed to "SNOMED CT UK Drug Extension, RF2: Full, Snapshot & Delta"
  * 2.
  *
@@ -29,8 +28,6 @@ import unzip from "unzip-stream";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-let Cookie;
-
 const FILES_DIR = path.join(__dirname, "files");
 const ZIP_DIR = ensureDir(path.join(FILES_DIR, "zip/"), true);
 const RAW_DIR = ensureDir(path.join(FILES_DIR, "raw"), true);
@@ -43,84 +40,38 @@ function ensureDir(filePath, isDir) {
   return filePath;
 }
 
-if (!process.env.email) {
-  console.log("Need email=xxx in the .env file");
-  process.exit();
-}
-if (!process.env.password) {
-  console.log("Need password=xxx in the .env file");
+if (!process.env.TRUD_API_KEY) {
+  console.log("Need TRUD_API_KEY=xxx in the .env file");
   process.exit();
 }
 
-async function login() {
-  if (Cookie) return;
-  const email = process.env.email;
-  const password = process.env.password;
-
-  console.log("> Logging in to TRUD...");
-
-  // Get initial session id by going to the login page
-
-  const loginPage = await fetch("https://isd.digital.nhs.uk/trud/users/guest/filters/0/login/form");
-  const sessionIdCookie = loginPage.headers
-    .getSetCookie()
-    .filter((x) => x.indexOf("JSESSIONID") > -1)[0]
-    .match(/JSESSIONID=([^ ;]+);/)[0];
-
-  const csrfToken = (await loginPage.text()).match(/_csrf" *value="([^"]+)"/)[1];
-
-  const result = await fetch("https://isd.digital.nhs.uk/trud/security/j_spring_security_check", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Cookie: sessionIdCookie,
-    },
-    redirect: "manual",
-    body: new URLSearchParams({
-      _csrf: csrfToken,
-      username: email,
-      password: password,
-      commit: "",
-    }),
-  });
-  const cookies = result.headers.getSetCookie();
-  const cookie = cookies
-    .filter((x) => x.indexOf("JSESSIONID") > -1)[0]
-    .match(/JSESSIONID=([^ ;]+);/)[0];
-  console.log("> Logged in, and cookie cached.");
-  Cookie = cookie;
+async function getLatestReleaseUrl(itemId) {
+  console.log(`> Fetching item ${itemId} releases from TRUD API...`);
+  const url = `https://isd.digital.nhs.uk/trud/api/v1/keys/${process.env.TRUD_API_KEY}/items/${itemId}/releases`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch TRUD item ${itemId} releases: ${response.status} ${response.statusText}`
+    );
+  }
+  const data = await response.json();
+  if (!data.releases?.length) {
+    throw new Error(`No releases returned for TRUD item ${itemId}`);
+  }
+  return data.releases
+    .slice()
+    .sort((a, b) => new Date(b.releaseDate) - new Date(a.releaseDate))[0].archiveFileUrl;
 }
 
 async function getLatestUrl() {
-  await login();
-  const response = await fetch(
-    "https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/101/releases",
-    { headers: { Cookie } }
-  );
-  const html = await response.text();
-  const downloads = html.match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g).map((url) => {
-    const [, zipFileName] = url.match(/\/([^/]+.zip)/);
-    return { url, zipFileName };
-  });
-
-  const drugResponse = await fetch(
-    "https://isd.digital.nhs.uk/trud/users/authenticated/filters/0/categories/26/items/105/releases",
-    { headers: { Cookie } }
-  );
-  const drugHtml = await drugResponse.text();
-  const drugDownloads = drugHtml
-    .match(/https:\/\/isd.digital.nhs.uk\/download[^"]+(?:")/g)
-    .map((url) => {
-      const [, zipFileName] = url.match(/\/([^/]+.zip)/);
-      return { url, zipFileName };
-    });
-
-  return { url: downloads[0].url, drugUrl: drugDownloads[0].url };
+  const [url, drugUrl] = await Promise.all([
+    getLatestReleaseUrl(101),
+    getLatestReleaseUrl(105),
+  ]);
+  return { url, drugUrl };
 }
 
 async function downloadIfNotExistsHelper(url) {
-  await login();
-
   const zipFileName = url.split("/").reverse()[0].split("?")[0];
   console.log(`> Target zip file on TRUD is ${zipFileName}`);
 
@@ -131,8 +82,12 @@ async function downloadIfNotExistsHelper(url) {
 
   console.log(`> That zip is not stored locally. Downloading...`);
   const outputFile = path.join(ZIP_DIR, zipFileName);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${zipFileName}: ${response.status} ${response.statusText}`);
+  }
   const stream = createWriteStream(ensureDir(outputFile));
-  const { body } = await fetch(url, { headers: { Cookie } });
+  const { body } = response;
   await finished(Readable.fromWeb(body).pipe(stream));
   console.log(`> File downloaded.`);
   return zipFileName;
