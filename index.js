@@ -25,6 +25,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import "dotenv/config";
 import unzip from "unzip-stream";
+import { createTerminalTitle } from "./lib/terminal-title.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -467,9 +468,22 @@ function copyToLatest({ dirName, drugDirName }) {
   console.log("> All files copied.");
 }
 
+// Keep the tab animated even during synchronous file processing.
+const title = createTerminalTitle();
+const onInterrupt = () => process.exit(130);
+const onTerminate = () => process.exit(143);
+process.once("SIGINT", onInterrupt);
+process.once("SIGTERM", onTerminate);
+title.running("Processing SNOMED");
+
 // Get latest TRUD version
 getLatestUrl()
   .then(downloadIfNotExists)
   .then(extractZip)
   .then(loadDataIntoMemory)
-  .then(copyToLatest);
+  .then(copyToLatest)
+  .finally(() => {
+    title.close();
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+  });
